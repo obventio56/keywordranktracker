@@ -11,15 +11,16 @@ import sys
 from pprint import pprint
 import datetime
 
-# If modifying these scopes, delete the file token.pickle.
+# Tells Google oauth what we want permission to touch
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
-# The ID and range of a sample spreadsheet.
+# Target spreadsheet ID
 SPREADSHEET_ID = '14dHPV1nQYuTL6voAlgbwrQLvUAmm22drSW0-0x9SraI'
 
 today = datetime.date.today()
 datestring = today.strftime('%m/%d/%Y')
 
+# Convert column index into A1 notation
 def colnum_string(n):
     string = ""
     while n > 0:
@@ -29,13 +30,11 @@ def colnum_string(n):
 
 def authenticate_google_sheets():
     creds = None
-    # The file token.pickle stores the user's access and refresh tokens, and is
-    # created automatically when the authorization flow completes for the first
-    # time.
     if os.path.exists('token.pickle'):
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
-    # If there are no (valid) credentials available, let the user log in.
+            
+    # If there are no valid credentials available, prompt log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -59,7 +58,7 @@ def authenticate_dataforseo():
     else: 
         raise ValueError('No datafroseo credentials.')
 
-
+# Download keywords from spreadsheet.
 def load_keyword_targets(service):
    
     # Call the Sheets API
@@ -73,6 +72,7 @@ def load_keyword_targets(service):
     else:
         return values[1:len(values)]
 
+# Submit keywords as jobs to DataForSEO
 def initiate_tasks(keyword_targets, client):
     post_data = dict()
     for _, target in enumerate(keyword_targets):
@@ -86,12 +86,13 @@ def initiate_tasks(keyword_targets, client):
     if response["status_code"] != 20000:
         print("error. Code: %d Message: %s" % (response["status_code"], response["status_message"]))
 
-
 def fetch_completed_tasks(client):
     response = client.get("/v3/serp/google/organic/tasks_ready")
     if response['status_code'] == 20000:
         results = dict()
         pprint(response)
+
+        # Gymnastics that put SERP results in a dict with the keyword string as the key
         for task in response['tasks']:
             if (task['result'] and (len(task['result']) > 0)):
                 for resultTaskInfo in task['result']:
@@ -107,15 +108,19 @@ def fetch_completed_tasks(client):
     else:
         print("error. Code: %d Message: %s" % (response["status_code"], response["status_message"]))
 
+# Search results for target url
 def get_rank(targets, results):
     rank_results = []
     for  _, target in enumerate(targets):
         serp_entries = results[target[0]]
         
+        # Find first index where the SERP url equals target url
         a = next((i for i in serp_entries if i["url"] == target[1]), -1)
         if a != -1:
             rank_results.append([a["rank_absolute"], ""])
             continue
+
+        # If url search comes up empty, search by domain name
         domain_name = urlparse(target[1]).netloc
         a = next((i for i in serp_entries if i["domain"] == domain_name), -1)
         if a != -1:
@@ -131,10 +136,9 @@ def write_rank_results(rank_results, service):
     request = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID, ranges='2020!1:1')
     response = request.execute()
     sheet_id = response["sheets"][0]["properties"]["sheetId"]
-
     column_count = response["sheets"][0]["properties"]["gridProperties"]["columnCount"]
 
-    
+    # Insert 2 columns to the end of the spreadsheet to store our results
     batch_update_spreadsheet_request_body = {"requests": [
         {
         "appendDimension": {
@@ -144,43 +148,44 @@ def write_rank_results(rank_results, service):
         }
         }
     ]}
-
     request = service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=batch_update_spreadsheet_request_body)
     response = request.execute()
 
+    # Write results to the two new columns we created
     body = {
         'values': rank_results
     }
-    
     service.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID, range=('2020!' + str(colnum_string(column_count + 1)) + ":" + str(colnum_string(column_count + 2)))
         , valueInputOption='RAW', body=body).execute()
 
-
-def start_job():
+# First step: download keywords from Google Sheets and send to DataForSEO 
+def initiate_ranking():
     service = authenticate_google_sheets()
     targets = load_keyword_targets(service)
     client = authenticate_dataforseo()
     initiate_tasks(targets, client)
-
     with open('targets.pickle', 'wb') as targetsf:
         pickle.dump(targets, targetsf)
 
+# Second step: once we're confident DataForSEO has completed our tasks, pull the results and write back to the spreadsheet
 def collect_results():
     service = authenticate_google_sheets()
     client = authenticate_dataforseo()
     targets = []
     with open('targets.pickle', 'rb') as targetsf:
         targets = pickle.load(targetsf)
-
-   
     results = fetch_completed_tasks(client)
     rank_results = get_rank(targets, results)
-    
     write_rank_results(rank_results, service)
 
+    os.remove("targets.pickle") 
+
 if __name__ == '__main__':
-    if sys.argv[1] == 'init':
-        start_job()
-    if sys.argv[1] == 'collect': 
+
+    # if we're waiting on results, collect and save
+    if os.path.exists('targets.pickle'):
         collect_results()
+    # otherwise initiate new tasks
+    else:
+        initiate_ranking()
