@@ -16,6 +16,7 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
 # Target spreadsheet ID
 SPREADSHEET_ID = '14dHPV1nQYuTL6voAlgbwrQLvUAmm22drSW0-0x9SraI'
+SHEET_TITLE = str(datetime.datetime.now().year)
 
 today = datetime.date.today()
 datestring = today.strftime('%m/%d/%Y')
@@ -58,13 +59,79 @@ def authenticate_dataforseo():
     else: 
         raise ValueError('No datafroseo credentials.')
 
+    
+def check_year_and_copy(service):
+    spreadsheet_data = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    sheets = spreadsheet_data["sheets"]
+    if next((sheet for sheet in sheets if sheet['properties']['title'] == SHEET_TITLE), -1) == -1:
+        old_sheet = str(datetime.datetime.now().year - 1)
+        old_sheet_id = next((sheet for sheet in sheets if sheet['properties']['title'] == old_sheet), -1)['properties']['sheetId']
+
+        # Count rows we must copy
+        sheet = service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID,
+                                    range=(old_sheet + '!A:B')).execute()
+        row_count = len(result.get('values', []))
+
+        # Create a new sheet
+        new_sheet_body = {
+            "requests": [
+                {
+                "addSheet": {
+                    "properties": {
+                    "title": SHEET_TITLE,
+                    "gridProperties": {
+                        "rowCount": row_count,
+                        "columnCount": 2
+                    }
+                    }
+                }
+                }
+            ]
+        }
+        request = service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=new_sheet_body)
+        new_sheet_response = request.execute()
+        new_sheet_id = new_sheet_response["replies"][0]["addSheet"]["properties"]["sheetId"]
+
+        # Copy targets from old sheet to new sheet
+        copy_keywords_body = {
+            "requests": [
+                {
+                "copyPaste": {
+                    "source": {
+                    "sheetId": old_sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": row_count,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 2
+                    },
+                    "destination": {
+                    "sheetId": new_sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": row_count,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 2
+                    },
+                    "pasteType": "PASTE_NORMAL"
+                }
+                }
+            ]
+        }
+
+        request = service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=copy_keywords_body)
+        request.execute()
+
+
 # Download keywords from spreadsheet.
 def load_keyword_targets(service):
+
+    # If it's a new year then move to a new sheet
+    check_year_and_copy(service)
    
     # Call the Sheets API
     sheet = service.spreadsheets()
     result = sheet.values().get(spreadsheetId=SPREADSHEET_ID,
-                                range='2020!A:B').execute()
+                                range=(SHEET_TITLE + '!A:B')).execute()
     values = result.get('values', [])
 
     if not values:
@@ -133,7 +200,7 @@ def write_rank_results(rank_results, service):
     rank_results.insert(0,[datestring, "Ranking URL"])
 
     #get sheet id and count existing columns
-    request = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID, ranges='2020!1:1')
+    request = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID, ranges=(SHEET_TITLE + '!1:1'))
     response = request.execute()
     sheet_id = response["sheets"][0]["properties"]["sheetId"]
     column_count = response["sheets"][0]["properties"]["gridProperties"]["columnCount"]
@@ -156,7 +223,7 @@ def write_rank_results(rank_results, service):
         'values': rank_results
     }
     service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID, range=('2020!' + str(colnum_string(column_count + 1)) + ":" + str(colnum_string(column_count + 2)))
+        spreadsheetId=SPREADSHEET_ID, range=(SHEET_TITLE + '!' + str(colnum_string(column_count + 1)) + ":" + str(colnum_string(column_count + 2)))
         , valueInputOption='RAW', body=body).execute()
 
 # First step: download keywords from Google Sheets and send to DataForSEO 
