@@ -5,7 +5,7 @@ This script:
 2. checks the keyword's rank on SERP pages using DataForSEO
 3. writes the target url's rank back to the spreadsheet
 
-##Usage
+## Usage
 
     python3 keyword_rank_tracker.py
 
