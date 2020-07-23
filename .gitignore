@@ -1,4 +1,6 @@
-credentials.json
+sheets_credentials.json
+drive_credentials.json
 dataforseocreds.json
 targets.pickle
-token.pickle
+sheets_token.pickle
+drive_token.pickle

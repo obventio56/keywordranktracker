@@ -4,6 +4,8 @@
 from __future__ import print_function
 import pickle
 import os.path
+import os
+import shutil
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -14,6 +16,8 @@ import json
 import sys
 from pprint import pprint
 import datetime
+from pathlib import Path
+import pathlib
 
 # Tells Google oauth what we want permission to touch
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
@@ -65,8 +69,8 @@ def authenticate_dataforseo():
         raise ValueError('No datafroseo credentials.')
 
     
-def check_year_and_copy(service):
-    spreadsheet_data = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+def check_year_and_copy(sheet_id, service):
+    spreadsheet_data = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
     sheets = spreadsheet_data["sheets"]
     if next((sheet for sheet in sheets if sheet['properties']['title'] == SHEET_TITLE), -1) == -1:
         old_sheet = str(datetime.datetime.now().year - 1)
@@ -74,7 +78,7 @@ def check_year_and_copy(service):
 
         # Count rows we must copy
         sheet = service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID,
+        result = sheet.values().get(spreadsheetId=sheet_id,
                                     range=(old_sheet + '!A:B')).execute()
         row_count = len(result.get('values', []))
 
@@ -94,7 +98,7 @@ def check_year_and_copy(service):
                 }
             ]
         }
-        request = service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=new_sheet_body)
+        request = service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=new_sheet_body)
         new_sheet_response = request.execute()
         new_sheet_id = new_sheet_response["replies"][0]["addSheet"]["properties"]["sheetId"]
 
@@ -123,19 +127,19 @@ def check_year_and_copy(service):
             ]
         }
 
-        request = service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=copy_keywords_body)
+        request = service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=copy_keywords_body)
         request.execute()
 
 
 # Download keywords from spreadsheet.
-def load_keyword_targets(service):
+def load_keyword_targets(sheet_id, service):
 
     # If it's a new year then move to a new sheet
-    check_year_and_copy(service)
+    check_year_and_copy(sheet_id, service)
    
     # Call the Sheets API
     sheet = service.spreadsheets()
-    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID,
+    result = sheet.values().get(spreadsheetId=sheet_id,
                                 range=(SHEET_TITLE + '!A:B')).execute()
     values = result.get('values', [])
 
@@ -189,7 +193,7 @@ def get_rank(targets, results):
         # Find first index where the SERP url equals target url
         a = next((i for i in serp_entries if i["url"] == target[1]), -1)
         if a != -1:
-            rank_results.append([a["rank_absolute"], ""])
+            rank_results.append([a["rank_absolute"], a["url"]])
             continue
 
         # If url search comes up empty, search by domain name
@@ -201,11 +205,11 @@ def get_rank(targets, results):
         rank_results.append([-1, ""])
     return rank_results
 
-def write_rank_results(rank_results, service):
+def write_rank_results(rank_results, spreadsheet_id, service):
     rank_results.insert(0,[datestring, "Ranking URL"])
 
     #get sheet id and count existing columns
-    request = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID, ranges=(SHEET_TITLE + '!1:1'))
+    request = service.spreadsheets().get(spreadsheetId=spreadsheet_id, ranges=(SHEET_TITLE + '!1:1'))
     response = request.execute()
     sheet_id = response["sheets"][0]["properties"]["sheetId"]
     column_count = response["sheets"][0]["properties"]["gridProperties"]["columnCount"]
@@ -220,7 +224,7 @@ def write_rank_results(rank_results, service):
         }
         }
     ]}
-    request = service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=batch_update_spreadsheet_request_body)
+    request = service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=batch_update_spreadsheet_request_body)
     response = request.execute()
 
     # Write results to the two new columns we created
@@ -228,53 +232,62 @@ def write_rank_results(rank_results, service):
         'values': rank_results
     }
     service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID, range=(SHEET_TITLE + '!' + str(colnum_string(column_count + 1)) + ":" + str(colnum_string(column_count + 2)))
+        spreadsheetId=spreadsheet_id, range=(SHEET_TITLE + '!' + str(colnum_string(column_count + 1)) + ":" + str(colnum_string(column_count + 2)))
         , valueInputOption='RAW', body=body).execute()
 
 # First step: download keywords from Google Sheets and send to DataForSEO 
-def initiate_ranking():
+def initiate_ranking_for_sheet(sheet_id, service, client):
+    targets = load_keyword_targets(sheet_id, service)
+    initiate_tasks(targets, client)
 
-    service = authenticate_google('drive', 'v3')
+    Path("targets").mkdir(parents=True, exist_ok=True)
+    with open('targets/' + sheet_id + '.pickle', 'wb') as targetsf:
+        pickle.dump(targets, targetsf)
+
+
+def initiate_ranking():
+    client = authenticate_dataforseo()
+    drive_service = authenticate_google('drive', 'v3')
+    sheet_service = authenticate_google('sheets', 'v4')
     page_token = None
     while True:
-        response = service.files().list(q="mimeType='application/vnd.google-apps.spreadsheet' and '" + FOLDER_ID + "' in parents",
+        response = drive_service.files().list(q="mimeType='application/vnd.google-apps.spreadsheet' and '" + FOLDER_ID + "' in parents",
                                             spaces='drive',
                                             fields='nextPageToken, files(id)',
                                             pageToken=page_token).execute()
         for file in response.get('files', []):
-            # Process change
-            sheed_id = file.get('id')
-            
+            # Process this sheet
+            initiate_ranking_for_sheet(file.get('id'), sheet_service, client)
         page_token = response.get('nextPageToken', None)
         if page_token is None:
             break
 
-
-
-    
-    #targets = load_keyword_targets(service)
-    #client = authenticate_dataforseo()
-    #initiate_tasks(targets, client)
-    #with open('targets.pickle', 'wb') as targetsf:
-    #    pickle.dump(targets, targetsf)
-
 # Second step: once we're confident DataForSEO has completed our tasks, pull the results and write back to the spreadsheet
 def collect_results():
-    service = authenticate_google_sheets()
+    service = authenticate_google('sheets', 'v4')
     client = authenticate_dataforseo()
     targets = []
-    with open('targets.pickle', 'rb') as targetsf:
-        targets = pickle.load(targetsf)
-    results = fetch_completed_tasks(client)
-    rank_results = get_rank(targets, results)
-    write_rank_results(rank_results, service)
 
-    os.remove("targets.pickle") 
+    results = fetch_completed_tasks(client)
+
+    target_directory = pathlib.Path('targets')
+
+    for target_file in target_directory.iterdir():
+        filename = os.fsdecode(target_file)
+        if filename.endswith(".pickle"): 
+            sheet_id = target_file.name.replace(".pickle", '')
+            with open(filename, 'rb') as targetsf:
+                targets = pickle.load(targetsf)
+                pprint(targets)
+                rank_results = get_rank(targets, results)
+                write_rank_results(rank_results, sheet_id, service)
+
+    shutil.rmtree('targets')
 
 if __name__ == '__main__':
 
     # if we're waiting on results, collect and save
-    if os.path.exists('targets.pickle'):
+    if os.path.exists('targets'):
         collect_results()
     # otherwise initiate new tasks
     else:
