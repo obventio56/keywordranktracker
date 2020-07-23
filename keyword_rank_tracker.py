@@ -1,9 +1,13 @@
+# Drive API key: AIzaSyAHPTev5BZN8cVVSvoYWfUe-SLZ_9IacRI 
+
+
 from __future__ import print_function
 import pickle
 import os.path
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from apiclient import errors
 from client import RestClient
 from urllib.parse import urlparse
 import json
@@ -12,10 +16,11 @@ from pprint import pprint
 import datetime
 
 # Tells Google oauth what we want permission to touch
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/drive']
 
 # Target spreadsheet ID
-SPREADSHEET_ID = '14dHPV1nQYuTL6voAlgbwrQLvUAmm22drSW0-0x9SraI'
+FOLDER_ID = '1gW7KFG6374MLzd_r7J82MuiVdSuytTBM'
 SHEET_TITLE = str(datetime.datetime.now().year)
 
 today = datetime.date.today()
@@ -29,10 +34,10 @@ def colnum_string(n):
         string = chr(65 + remainder) + string
     return string
 
-def authenticate_google_sheets():
+def authenticate_google(API_title, API_version):
     creds = None
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
+    if os.path.exists(API_title + '_token.pickle'):
+        with open(API_title + '_token.pickle', 'rb') as token:
             creds = pickle.load(token)
             
     # If there are no valid credentials available, prompt log in.
@@ -41,13 +46,13 @@ def authenticate_google_sheets():
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
+                API_title + '_credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-        with open('token.pickle', 'wb') as token:
+        with open(API_title + '_token.pickle', 'wb') as token:
             pickle.dump(creds, token)
     
-    return build('sheets', 'v4', credentials=creds)
+    return build(API_title, API_version, credentials=creds)
 
 def authenticate_dataforseo():
     creds = None
@@ -228,12 +233,30 @@ def write_rank_results(rank_results, service):
 
 # First step: download keywords from Google Sheets and send to DataForSEO 
 def initiate_ranking():
-    service = authenticate_google_sheets()
-    targets = load_keyword_targets(service)
-    client = authenticate_dataforseo()
-    initiate_tasks(targets, client)
-    with open('targets.pickle', 'wb') as targetsf:
-        pickle.dump(targets, targetsf)
+
+    service = authenticate_google('drive', 'v3')
+    page_token = None
+    while True:
+        response = service.files().list(q="mimeType='application/vnd.google-apps.spreadsheet' and '" + FOLDER_ID + "' in parents",
+                                            spaces='drive',
+                                            fields='nextPageToken, files(id)',
+                                            pageToken=page_token).execute()
+        for file in response.get('files', []):
+            # Process change
+            sheed_id = file.get('id')
+            
+        page_token = response.get('nextPageToken', None)
+        if page_token is None:
+            break
+
+
+
+    
+    #targets = load_keyword_targets(service)
+    #client = authenticate_dataforseo()
+    #initiate_tasks(targets, client)
+    #with open('targets.pickle', 'wb') as targetsf:
+    #    pickle.dump(targets, targetsf)
 
 # Second step: once we're confident DataForSEO has completed our tasks, pull the results and write back to the spreadsheet
 def collect_results():
