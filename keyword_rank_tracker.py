@@ -1,6 +1,3 @@
-# Drive API key: AIzaSyAHPTev5BZN8cVVSvoYWfUe-SLZ_9IacRI 
-
-
 from __future__ import print_function
 import pickle
 import os.path
